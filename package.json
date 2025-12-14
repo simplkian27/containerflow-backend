@@ -2,9 +2,9 @@
   "name": "my-app",
   "main": "client/index.js",
   "version": "1.0.0",
+  "type": "module",
   "scripts": {
 "dev": "rimraf dist && run-p dev:esbuild dev:electron",
-    // Run `tsc` without output before build as esbuild does not type check.
     "build": "tsc && cross-env NODE_ENV=\"production\" ts-node ./esbuild.ts",
     "dev:esbuild": "cross-env NODE_ENV=\"development\" ts-node ./esbuild.ts",
     "dev:electron": "wait-on dist/main.js dist/index.html && electronmon ."
