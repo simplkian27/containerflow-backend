@@ -510,31 +510,6 @@ async function generateFlexibleScheduledTasks() {
 }
 
 export async function registerRoutes(app: Express): Promise<Server> {
-  // Request logging middleware
-  app.use("/api", (req, res, next) => {
-    const start = Date.now();
-    const requestId = `${Date.now()}-${Math.random().toString(36).substring(7)}`;
-    
-    // Add requestId to response header for debugging
-    res.setHeader("X-Request-Id", requestId);
-    
-    // Log response when finished
-    res.on("finish", () => {
-      const duration = Date.now() - start;
-      const logMessage = `${req.method} ${req.path} ${res.statusCode} in ${duration}ms`;
-      
-      // Truncate response body for logging
-      const responseBody = (res as any)._logBody;
-      const bodySnippet = responseBody 
-        ? JSON.stringify(responseBody).substring(0, 100) + (JSON.stringify(responseBody).length > 100 ? "…" : "")
-        : "";
-      
-      console.log(`${logMessage} :: ${bodySnippet}`);
-    });
-    
-    next();
-  });
-
   // Quick ping endpoint - no database, instant response for connectivity testing
   app.get("/api/debug/ping", (req, res) => {
     res.json({ 
@@ -543,14 +518,19 @@ export async function registerRoutes(app: Express): Promise<Server> {
       env: {
         nodeEnv: process.env.NODE_ENV,
         hasDbUrl: !!process.env.DATABASE_URL,
+        requestId: (req as any).requestId,
       }
     });
   });
 
   // Health check endpoint - verifies backend is running and database is connected
   // Used for monitoring and validating Supabase/PostgreSQL connectivity
-  app.head("/api/health", (req, res) => {
-    res.status(200).end();
+  app.head("/api/health", async (_req, res) => {
+    const dbHealth = await checkDatabaseHealth();
+    if (dbHealth.connected) {
+      return res.status(200).end();
+    }
+    return res.status(503).end();
   });
 
   app.get("/api/health", async (req, res) => {
@@ -1127,14 +1107,96 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   app.post("/api/admin/tasks", requireAuth, requireAdmin, async (req, res) => {
     try {
-      const { title, standId, description, priority, scheduledFor } = req.body;
+      const { title, standId, description, priority, scheduledFor, hallId, stationId } = req.body;
       const authUser = (req as any).authUser;
+
+      const isAutomotivePayload = !!(hallId || stationId);
+
+      // Automotive/manual flow for halls/stations/stands (used by mobile manual task screen)
+      if (isAutomotivePayload) {
+        if (!hallId || !stationId || !standId) {
+          return res
+            .status(400)
+            .json({ error: "hallId, stationId, and standId are required" });
+        }
+
+        const [station] = await db.select().from(stations).where(eq(stations.id, stationId));
+        if (!station) {
+          return res.status(404).json({ error: "Station not found" });
+        }
+        if (station.hallId !== hallId) {
+          return res.status(400).json({ error: "Station does not belong to the specified hall" });
+        }
+
+        const [stand] = await db.select().from(stands).where(eq(stands.id, standId));
+        if (!stand) {
+          return res.status(404).json({ error: "Stand not found" });
+        }
+        if (stand.stationId !== stationId) {
+          return res.status(400).json({ error: "Stand does not belong to the specified station" });
+        }
+        if (!stand.isActive) {
+          return res.status(400).json({ error: "Stand is not active" });
+        }
+
+        // Check for existing OPEN tasks for this stand (warning only - still allow creation)
+        const [existingOpenTask] = await db
+          .select()
+          .from(tasks)
+          .where(and(eq(tasks.standId, standId), eq(tasks.status, "OPEN")));
+        if (existingOpenTask) {
+          console.log(
+            `[ManualTask] Warning: Creating new task for stand ${standId} which already has an OPEN task ${existingOpenTask.id}`,
+          );
+        }
+
+        const parsedDate = scheduledFor ? new Date(scheduledFor) : null;
+        if (scheduledFor && (!parsedDate || isNaN(parsedDate.getTime()))) {
+          return res.status(400).json({ error: "Invalid scheduledFor date format" });
+        }
+
+        const [newTask] = await db
+          .insert(tasks)
+          .values({
+            title: title || `Manuelle Aufgabe - Stand ${stand.identifier}`,
+            description: description ?? null,
+            status: "OPEN",
+            source: "MANUAL",
+            taskType: "AUTOMOTIVE",
+            standId,
+            materialType: stand.materialId,
+            scheduledFor: parsedDate,
+            dedupKey: null,
+            scheduleId: null,
+            priority: priority || "normal",
+          })
+          .returning();
+
+        await createAuditEvent({
+          taskId: newTask.id,
+          actorUserId: authUser?.id,
+          action: "TASK_CREATED",
+          entityType: "task",
+          entityId: newTask.id,
+          afterData: newTask,
+          metaJson: {
+            hallId,
+            stationId,
+            standId,
+            materialId: stand.materialId || undefined,
+            source: "MANUAL",
+          },
+        });
+
+        console.log(`[Admin] Manual task created: ${newTask.id} for stand ${stand.identifier}`);
+        return res.status(201).json(newTask);
+      }
 
       if (!title || !standId) {
         return res.status(400).json({ error: "Title and standId are required" });
       }
 
-      // Verify stand exists
+      // Verify stand exists (legacy manual task flow)
       const [stand] = await db.select().from(stands).where(eq(stands.id, standId));
       if (!stand) {
         return res.status(404).json({ error: "Stand not found" });
@@ -1153,23 +1215,26 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // Build stable dedup key using crypto hash for true idempotency
       const dateStr = formatDateBerlin(scheduledDate);
       const dedupSource = `${title}|${standId}|${dateStr}`;
-      const dedupHash = createHash('sha256').update(dedupSource).digest('hex').substring(0, 16);
+      const dedupHash = createHash("sha256").update(dedupSource).digest("hex").substring(0, 16);
       const dedupKey = `MANUAL:${dedupHash}`;
 
-      const [newTask] = await db.insert(tasks).values({
-        title,
-        description: description || null,
-        containerID: standId,
-        standId,
-        materialType: stand.materialId || null,
-        taskType: "MANUAL",
-        source: "MANUAL",
-        status: "OPEN",
-        priority: priority || "normal",
-        scheduledFor: scheduledDate,
-        dedupKey,
-        createdBy: authUser.id,
-      }).returning();
+      const [newTask] = await db
+        .insert(tasks)
+        .values({
+          title,
+          description: description || null,
+          containerID: standId,
+          standId,
+          materialType: stand.materialId || null,
+          taskType: "MANUAL",
+          source: "MANUAL",
+          status: "OPEN",
+          priority: priority || "normal",
+          scheduledFor: scheduledDate,
+          dedupKey,
+          createdBy: authUser.id,
+        })
+        .returning();
 
       // Audit log
       const standMeta = await buildStandContextMeta(standId);
@@ -6146,92 +6211,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error) {
       console.error("[Admin] Failed to fetch stands with materials:", error);
       res.status(500).json({ error: "Failed to fetch stands" });
-    }
-  });
-
-  /**
-   * POST /api/admin/tasks
-   * Create a manual task for a specific stand
-   * Body: { hallId, stationId, standId, scheduledFor?: string }
-   */
-  app.post("/api/admin/tasks", requireAuth, requireAdmin, async (req, res) => {
-    try {
-      const { hallId, stationId, standId, scheduledFor } = req.body;
-      const authUser = (req as any).authUser;
-
-      if (!hallId || !stationId || !standId) {
-        return res.status(400).json({ error: "hallId, stationId, and standId are required" });
-      }
-
-      // Validate station belongs to hall
-      const [station] = await db.select().from(stations).where(eq(stations.id, stationId));
-      if (!station) {
-        return res.status(404).json({ error: "Station not found" });
-      }
-      if (station.hallId !== hallId) {
-        return res.status(400).json({ error: "Station does not belong to the specified hall" });
-      }
-
-      // Validate stand belongs to station
-      const [stand] = await db.select().from(stands).where(eq(stands.id, standId));
-      if (!stand) {
-        return res.status(404).json({ error: "Stand not found" });
-      }
-      if (stand.stationId !== stationId) {
-        return res.status(400).json({ error: "Stand does not belong to the specified station" });
-      }
-      if (!stand.isActive) {
-        return res.status(400).json({ error: "Stand is not active" });
-      }
-
-      // Check for existing OPEN tasks for this stand (warning only - still allow creation)
-      const [existingOpenTask] = await db.select().from(tasks).where(
-        and(
-          eq(tasks.standId, standId),
-          eq(tasks.status, "OPEN")
-        )
-      );
-      if (existingOpenTask) {
-        console.log(`[ManualTask] Warning: Creating new task for stand ${standId} which already has an OPEN task ${existingOpenTask.id}`);
-      }
-
-      // Create the task
-      const [newTask] = await db.insert(tasks).values({
-        title: `Manuelle Aufgabe - Stand ${stand.identifier}`,
-        description: null,
-        status: "OPEN",
-        source: "MANUAL",
-        taskType: "AUTOMOTIVE",
-        standId: standId,
-        materialType: stand.materialId,
-        scheduledFor: scheduledFor ? new Date(scheduledFor) : null,
-        dedupKey: null,
-        scheduleId: null,
-        priority: "normal",
-      }).returning();
-
-      // Create audit event
-      await createAuditEvent({
-        taskId: newTask.id,
-        actorUserId: authUser?.id,
-        action: "TASK_CREATED",
-        entityType: "task",
-        entityId: newTask.id,
-        afterData: newTask,
-        metaJson: {
-          hallId,
-          stationId,
-          standId,
-          materialId: stand.materialId || undefined,
-          source: "MANUAL",
-        },
-      });
-
-      console.log(`[Admin] Manual task created: ${newTask.id} for stand ${stand.identifier}`);
-      res.status(201).json(newTask);
-    } catch (error) {
-      console.error("[Admin] Failed to create manual task:", error);
-      res.status(500).json({ error: "Failed to create task" });
     }
   });
 

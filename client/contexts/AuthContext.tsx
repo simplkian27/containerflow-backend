@@ -2,7 +2,7 @@ import React, { createContext, useContext, useState, useEffect, ReactNode } from
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { Platform } from "react-native";
 import * as WebBrowser from "expo-web-browser";
-import { apiRequest, getApiUrl } from "@/lib/query-client";
+import { apiRequest, getApiOrigin } from "@/lib/query-client";
 
 export type UserRole = "driver" | "admin";
 
@@ -108,7 +108,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       await AsyncStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(authUser));
       setUser(authUser);
     } else {
-      const baseUrl = getApiUrl();
+      const baseUrl = getApiOrigin();
       const authUrl = `${baseUrl}/__replauthLoginPage`;
       
       const result = await WebBrowser.openAuthSessionAsync(authUrl, "containerflow://auth");

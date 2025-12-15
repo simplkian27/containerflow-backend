@@ -28,3 +28,11 @@ Preferred communication style: Simple, everyday language.
 - **Database**: PostgreSQL (specifically Supabase PostgreSQL). Drizzle ORM for type-safe database access.
 - **Mobile Platform Services**: Expo for React Native build and development, `expo-camera` for QR scanning, `expo-location` for GPS, `expo-file-system` and `expo-sharing` for CSV export.
 - **Runtime Environment**: Requires `DATABASE_URL` (Supabase connection string), `EXPO_PUBLIC_DOMAIN` for API connectivity, and Replit-specific domain variables.
+
+## Replit Quick Start
+
+- Set secrets in the Replit Secrets panel: `DATABASE_URL`, `EXPO_PUBLIC_DOMAIN=$REPLIT_DEV_DOMAIN:5000`, optional `PORT=5000` (defaults to 5000).
+- Install deps once: `npm install`.
+- Start everything: `npm run all:dev` (Express on 0.0.0.0:5000 + Expo tunnel with cache cleared).
+- Start individually if needed: `npm run server:dev` or `npm run expo:dev`.
+- Expo Go: scan the QR code from the Replit console output; ensure phone is on the same network/VPN if tunnel is blocked.

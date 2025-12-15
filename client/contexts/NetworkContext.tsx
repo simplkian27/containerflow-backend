@@ -9,7 +9,7 @@ import {
   formatLastSync,
   PendingAction,
 } from "@/lib/offline-storage";
-import { apiRequest, getApiUrl } from "@/lib/query-client";
+import { apiRequest, buildApiUrl } from "@/lib/query-client";
 
 interface NetworkContextType {
   isOnline: boolean;
@@ -33,7 +33,7 @@ export function NetworkProvider({ children }: { children: ReactNode }) {
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 5000);
       
-      const response = await fetch(`${getApiUrl()}/api/health`, {
+      const response = await fetch(buildApiUrl("/health"), {
         method: "GET",
         cache: "no-store",
         signal: controller.signal,
