@@ -14,7 +14,6 @@ await build({
   format: "esm",
   sourcemap: !isProd,
   minify: isProd,
-  packages: "external",
   logLevel: "info",
   banner: {
     js: `
