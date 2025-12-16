@@ -1,0 +1,75 @@
+{
+    "type": "float-area",
+    "_widgets": [
+        [
+            {
+                "widget": {
+                    "constructionOptions": {
+                        "factoryId": "code-editor-opener",
+                        "options": {
+                            "kind": "navigatable",
+                            "uri": ".env",
+                            "floatAreaId": "e3b1feba-52af-4a45-b7ed-a8e15e3bd798"
+                        }
+                    },
+                    "innerWidgetState": {
+                        "cursorState": [
+                            {
+                                "inSelectionMode": false,
+                                "selectionStart": {
+                                    "lineNumber": 1,
+                                    "column": 1
+                                },
+                                "position": {
+                                    "lineNumber": 1,
+                                    "column": 1
+                                }
+                            }
+                        ],
+                        "viewState": {
+                            "scrollLeft": 0,
+                            "firstPosition": {
+                                "lineNumber": 1,
+                                "column": 1
+                            },
+                            "firstPositionDeltaTop": 0
+                        },
+                        "contributionsState": {
+                            "editor.contrib.folding": {
+                                "lineCount": 8,
+                                "foldedImports": false
+                            },
+                            "editor.contrib.wordHighlighter": false
+                        }
+                    }
+                },
+                "width": 600,
+                "height": 450,
+                "spacing": 0
+            },
+            {
+                "widget": {
+                    "constructionOptions": {
+                        "factoryId": "code-editor-opener",
+                        "options": {
+                            "kind": "navigatable",
+                            "uri": "file:///%5Bobject%20Object%5D",
+                            "floatAreaId": "e3b1feba-52af-4a45-b7ed-a8e15e3bd798"
+                        }
+                    }
+                },
+                "width": 600,
+                "height": 450,
+                "spacing": 0
+            }
+        ]
+    ],
+    "_widths": [
+        600
+    ],
+    "_modelData": {
+        "connections": [],
+        "annotations": [],
+        "highlights": []
+    }
+}
