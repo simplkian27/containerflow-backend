@@ -25,7 +25,7 @@ import { LoadingScreen } from "@/components/LoadingScreen";
 import { KeyboardAwareScrollViewCompat } from "@/components/KeyboardAwareScrollViewCompat";
 import { Spacing, BorderRadius, IndustrialDesign } from "@/constants/theme";
 import { useTheme } from "@/hooks/useTheme";
-import { apiRequest, getApiUrl } from "@/lib/query-client";
+import { apiRequest, buildApiUrl } from "@/lib/query-client";
 
 interface Stand {
   id: string;
@@ -108,8 +108,8 @@ export default function ScheduleManagementScreen() {
     queryKey: ["/api/admin/schedules", previewScheduleId, "preview"],
     enabled: !!previewScheduleId,
     queryFn: async () => {
-      const url = new URL(`/api/admin/schedules/${previewScheduleId}/preview?days=14`, getApiUrl());
-      const response = await fetch(url.toString(), { credentials: "include" });
+      const url = buildApiUrl(`/admin/schedules/${previewScheduleId}/preview?days=14`);
+      const response = await fetch(url, { credentials: "include" });
       if (!response.ok) throw new Error("Failed to fetch preview");
       return response.json();
     },

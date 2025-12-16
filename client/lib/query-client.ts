@@ -1,50 +1,192 @@
 import { QueryClient, QueryFunction } from "@tanstack/react-query";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 
-// Auth storage key - must match AuthContext
 const AUTH_STORAGE_KEY = "@containerflow_auth_user";
-
-// Enable debug logging in development
 const DEBUG_API = __DEV__ || process.env.NODE_ENV === "development";
+const LOG_SNIPPET_LENGTH = 200;
 
-function logApi(method: string, url: string, status?: number, error?: string) {
-  if (DEBUG_API) {
-    if (error) {
-      console.warn(`[API ERROR] ${method} ${url} - ${error}`);
-    } else if (status) {
-      console.log(`[API] ${method} ${url} -> ${status}`);
-    } else {
-      console.log(`[API] ${method} ${url}`);
-    }
+type ApiConfig = {
+  origin: string;
+  baseUrl: string;
+  host: string;
+  protocol: "http" | "https";
+  port?: string;
+  raw: string;
+};
+
+type ApiErrorOptions = {
+  message: string;
+  status?: number;
+  statusText?: string;
+  url: string;
+  isHtmlResponse?: boolean;
+  isNetworkError?: boolean;
+  isConfigError?: boolean;
+  requestId?: string;
+  responseSnippet?: string;
+};
+
+function buildUserMessage(options: ApiErrorOptions): string {
+  if (options.isConfigError) {
+    return options.message;
+  }
+  if (options.isNetworkError) {
+    return `Network error: cannot reach API. URL=${options.url}. Check EXPO_PUBLIC_DOMAIN`;
+  }
+  if (options.isHtmlResponse) {
+    return "API misconfigured: got HTML instead of JSON. Check API_BASE_URL.";
+  }
+  if (options.status === 401 || options.status === 403) {
+    return options.message || "Not logged in / not authorized";
+  }
+  if (options.message) {
+    return options.message;
+  }
+  return "Unexpected API error.";
+}
+
+export class ApiError extends Error {
+  status: number;
+  statusText: string;
+  url: string;
+  isHtmlResponse: boolean;
+  isNetworkError: boolean;
+  isConfigError: boolean;
+  requestId?: string;
+  responseSnippet?: string;
+
+  constructor(options: ApiErrorOptions) {
+    const userMessage = buildUserMessage(options);
+    super(userMessage);
+    this.name = "ApiError";
+    this.status = options.status || 0;
+    this.statusText = options.statusText || "";
+    this.url = options.url;
+    this.isHtmlResponse = !!options.isHtmlResponse;
+    this.isNetworkError = !!options.isNetworkError;
+    this.isConfigError = !!options.isConfigError;
+    this.requestId = options.requestId;
+    this.responseSnippet = options.responseSnippet;
+  }
+
+  toUserMessage(): string {
+    return this.message;
   }
 }
 
-// API URL Configuration
-// EXPO_PUBLIC_DOMAIN is set by Replit at startup to "$REPLIT_DEV_DOMAIN:5000"
-// This ensures all API requests go to the Express backend on port 5000
-// The Expo app NEVER connects directly to Supabase - all DB access goes through the backend
-export function getApiUrl(): string {
-  const host = process.env.EXPO_PUBLIC_DOMAIN;
+let cachedApiConfig: ApiConfig | null = null;
 
-  if (!host) {
+function logApi(options: {
+  method: string;
+  url: string;
+  status?: number;
+  bodySize?: number;
+  message?: string;
+  snippet?: string;
+  level?: "info" | "error";
+}) {
+  if (!DEBUG_API) return;
+
+  const { method, url, status, bodySize, message, snippet, level = "info" } = options;
+  const prefix = level === "error" ? "[API ERROR]" : "[API]";
+  const sizePart = bodySize !== undefined ? ` body=${bodySize}B` : "";
+  const statusPart = status !== undefined ? ` -> ${status}` : "";
+  const messagePart = message ? ` :: ${message}` : "";
+  const snippetPart = snippet ? ` :: snippet=${snippet.slice(0, LOG_SNIPPET_LENGTH)}` : "";
+  const logLine = `${prefix} ${method} ${url}${sizePart}${statusPart}${messagePart}${snippetPart}`;
+
+  if (level === "error") {
+    console.warn(logLine);
+  } else {
+    console.log(logLine);
+  }
+}
+
+function resolveApiConfig(): ApiConfig {
+  if (cachedApiConfig) return cachedApiConfig;
+
+  const raw = (process.env.EXPO_PUBLIC_DOMAIN || "").trim();
+  if (!raw) {
+    throw new ApiError({
+      message:
+        "API configuration missing: EXPO_PUBLIC_DOMAIN is not set. Set it to localhost:5000 for local dev or your deployed domain.",
+      url: "config://missing",
+      isConfigError: true,
+    });
+  }
+
+  let host = raw.replace(/^https?:\/\//i, "").trim();
+  host = host.replace(/\/+$/g, "");
+  if (host.includes("/")) {
+    host = host.split("/")[0];
+  }
+
+  const [hostname, port] = host.split(":");
+  const isLocalhost =
+    hostname.includes("localhost") ||
+    hostname.includes("127.0.0.1") ||
+    hostname.startsWith("192.168.") ||
+    hostname.startsWith("10.");
+
+  const protocol: "http" | "https" = isLocalhost ? "http" : "https";
+  const hasSuspiciousRemotePort = !isLocalhost && !!port && !hostname.includes("replit");
+
+  if (hasSuspiciousRemotePort) {
     console.warn(
-      "[API CONFIG] EXPO_PUBLIC_DOMAIN is not set. Network requests will fail. " +
-      "Set this environment variable to your API domain (e.g., 'your-domain.replit.dev:5000')"
+      `[API CONFIG] EXPO_PUBLIC_DOMAIN includes custom port ${port} on remote host ${hostname}. Hosted environments often block that port. Remove the port if requests fail.`,
     );
-    return "http://localhost:5000";
   }
 
-  // Determine protocol based on host
-  const isLocalhost = host.includes("localhost") || host.includes("127.0.0.1");
-  const protocol = isLocalhost ? "http" : "https";
-  
-  const url = `${protocol}://${host}`;
-  
-  if (DEBUG_API) {
-    console.log(`[API CONFIG] Base URL: ${url}`);
+  const originHost = hasSuspiciousRemotePort ? hostname : host;
+  const origin = `${protocol}://${originHost}`;
+  const baseUrl = `${origin}/api`;
+
+  cachedApiConfig = { origin, baseUrl, host: originHost, protocol, port, raw };
+
+  logApi({
+    method: "CONFIG",
+    url: baseUrl,
+    message: `Resolved EXPO_PUBLIC_DOMAIN=${raw}`,
+  });
+
+  return cachedApiConfig;
+}
+
+export function getApiUrl(): string {
+  return resolveApiConfig().baseUrl;
+}
+
+export function getApiOrigin(): string {
+  return resolveApiConfig().origin;
+}
+
+export function getApiDiagnostics(): ApiConfig {
+  return resolveApiConfig();
+}
+
+function normalizeRoute(route: string): string {
+  const trimmed = (route || "").trim();
+  if (!trimmed) return "";
+
+  if (trimmed.startsWith("http://") || trimmed.startsWith("https://")) {
+    return trimmed;
   }
-  
-  return url;
+
+  let cleaned = trimmed;
+  if (cleaned.startsWith("/")) cleaned = cleaned.slice(1);
+  if (cleaned.startsWith("api/")) cleaned = cleaned.slice(4);
+  return cleaned;
+}
+
+export function buildApiUrl(route: string): string {
+  const normalized = normalizeRoute(route);
+
+  if (normalized.startsWith("http://") || normalized.startsWith("https://")) {
+    return normalized;
+  }
+
+  const base = resolveApiConfig().baseUrl;
+  return new URL(normalized, `${base}/`).toString().replace(/\/$/, "");
 }
 
 // Get current user ID from AsyncStorage for auth headers
@@ -61,104 +203,82 @@ async function getStoredUserId(): Promise<string | null> {
   return null;
 }
 
-// Custom error class for API errors with detailed info
-export class ApiError extends Error {
-  status: number;
-  statusText: string;
-  url: string;
-  isHtmlResponse: boolean;
-  isNetworkError: boolean;
-  
-  constructor(options: {
-    message: string;
-    status?: number;
-    statusText?: string;
-    url: string;
-    isHtmlResponse?: boolean;
-    isNetworkError?: boolean;
-  }) {
-    super(options.message);
-    this.name = "ApiError";
-    this.status = options.status || 0;
-    this.statusText = options.statusText || "";
-    this.url = options.url;
-    this.isHtmlResponse = options.isHtmlResponse || false;
-    this.isNetworkError = options.isNetworkError || false;
-  }
-  
-  toUserMessage(): string {
-    if (this.isNetworkError) {
-      return `Netzwerkfehler: Server nicht erreichbar. Bitte Internetverbindung prüfen.`;
-    }
-    if (this.isHtmlResponse) {
-      return `API-Konfigurationsfehler: Server antwortet mit HTML statt JSON. Bitte EXPO_PUBLIC_DOMAIN prüfen.`;
-    }
-    if (this.status === 401) {
-      return `Nicht angemeldet. Bitte erneut einloggen.`;
-    }
-    if (this.status === 403) {
-      return `Keine Berechtigung für diese Aktion.`;
-    }
-    if (this.status === 404) {
-      return `Nicht gefunden.`;
-    }
-    if (this.status >= 500) {
-      return `Serverfehler (${this.status}). Bitte später erneut versuchen.`;
-    }
-    return this.message;
+function getBodySize(data?: unknown): number {
+  if (data === undefined) return 0;
+  try {
+    return JSON.stringify(data).length;
+  } catch {
+    return 0;
   }
 }
 
-// Parse response and throw detailed errors
-async function handleResponse(res: Response, url: string, method: string): Promise<void> {
+async function validateResponse(
+  res: Response,
+  ctx: { method: string; url: string; bodySize?: number },
+): Promise<void> {
   const contentType = res.headers.get("content-type") || "";
-  
-  // Detect HTML response (misconfiguration - hitting wrong server)
+  const requestId = res.headers.get("x-request-id") || undefined;
+
   if (contentType.includes("text/html")) {
-    const snippet = (await res.text()).substring(0, 100);
-    logApi(method, url, res.status, `Got HTML instead of JSON: ${snippet}...`);
+    const snippet = (await res.text()).slice(0, LOG_SNIPPET_LENGTH);
+    const message = "API misconfigured: got HTML instead of JSON. Check API_BASE_URL.";
+    logApi({ method: ctx.method, url: ctx.url, status: res.status, message, snippet, level: "error" });
     throw new ApiError({
-      message: `API misconfigured: received HTML instead of JSON. URL: ${url}`,
+      message,
       status: res.status,
       statusText: res.statusText,
-      url,
+      url: ctx.url,
       isHtmlResponse: true,
+      requestId,
+      responseSnippet: snippet,
     });
   }
-  
+
   if (!res.ok) {
-    let errorMessage = res.statusText;
-    
-    // Try to extract error message from JSON response
+    let serverMessage = res.statusText || "Request failed";
+    let snippet = "";
+
     if (contentType.includes("application/json")) {
       try {
-        const errorData = await res.json();
-        errorMessage = errorData.error || errorData.message || errorData.details || res.statusText;
+        const data = await res.json();
+        serverMessage = data.error || data.message || data.details || serverMessage;
+        snippet = JSON.stringify(data);
       } catch {
-        // Failed to parse JSON, use status text
+        // ignore
       }
     } else {
-      // Try to get text content
       try {
         const text = await res.text();
-        if (text && text.length < 200) {
-          errorMessage = text;
+        if (text) {
+          serverMessage = text;
+          snippet = text;
         }
       } catch {
-        // Ignore
+        // ignore
       }
     }
-    
-    logApi(method, url, res.status, errorMessage);
+
+    const truncatedSnippet = snippet ? snippet.slice(0, LOG_SNIPPET_LENGTH) : undefined;
+    logApi({
+      method: ctx.method,
+      url: ctx.url,
+      status: res.status,
+      message: serverMessage,
+      snippet: truncatedSnippet,
+      level: "error",
+    });
+
     throw new ApiError({
-      message: `${res.status}: ${errorMessage}`,
+      message: serverMessage,
       status: res.status,
       statusText: res.statusText,
-      url,
+      url: ctx.url,
+      requestId,
+      responseSnippet: truncatedSnippet,
     });
   }
-  
-  logApi(method, url, res.status);
+
+  logApi({ method: ctx.method, url: ctx.url, status: res.status, bodySize: ctx.bodySize });
 }
 
 export async function apiRequest(
@@ -166,19 +286,17 @@ export async function apiRequest(
   route: string,
   data?: unknown | undefined,
 ): Promise<Response> {
-  const baseUrl = getApiUrl();
-  const url = new URL(route, baseUrl);
-  const urlString = url.toString();
+  const urlString = buildApiUrl(route);
+  const bodySize = getBodySize(data);
+  const bodyString = data !== undefined ? JSON.stringify(data) : undefined;
 
-  logApi(method, urlString);
+  logApi({ method, url: urlString, bodySize });
 
-  // Build headers with authentication
   const headers: Record<string, string> = {};
-  if (data) {
+  if (bodyString) {
     headers["Content-Type"] = "application/json";
   }
-  
-  // Include user ID for authentication on protected routes
+
   const userId = await getStoredUserId();
   if (userId) {
     headers["x-user-id"] = userId;
@@ -186,26 +304,19 @@ export async function apiRequest(
 
   let res: Response;
   try {
-    res = await fetch(url, {
+    res = await fetch(urlString, {
       method,
       headers,
-      body: data ? JSON.stringify(data) : undefined,
+      body: bodyString,
       credentials: "include",
     });
-  } catch (error) {
-    // Network error - fetch itself failed
-    const errorMsg = error instanceof Error ? error.message : "Unknown network error";
-    logApi(method, urlString, undefined, `Network error: ${errorMsg}`);
-    throw new ApiError({
-      message: `Network error: ${errorMsg}. URL: ${urlString}`,
-      url: urlString,
-      isNetworkError: true,
-    });
+  } catch {
+    const message = `Network error: cannot reach API. URL=${urlString}. Check EXPO_PUBLIC_DOMAIN`;
+    logApi({ method, url: urlString, message, level: "error" });
+    throw new ApiError({ message, url: urlString, isNetworkError: true });
   }
 
-  // Check for errors (HTML response, HTTP errors)
-  await handleResponse(res, urlString, method);
-  
+  await validateResponse(res, { method, url: urlString, bodySize });
   return res;
 }
 
@@ -215,8 +326,8 @@ export const getQueryFn: <T>(options: {
 }) => QueryFunction<T> =
   ({ on401: unauthorizedBehavior }) =>
   async ({ queryKey }) => {
-    const baseUrl = getApiUrl();
-    const url = new URL(queryKey[0] as string, baseUrl);
+    const baseUrl = buildApiUrl(queryKey[0] as string);
+    const url = new URL(baseUrl);
 
     if (queryKey.length > 1 && queryKey[1]) {
       const params = queryKey[1] as Record<string, string>;
@@ -228,72 +339,32 @@ export const getQueryFn: <T>(options: {
     }
 
     const urlString = url.toString();
-    logApi("GET", urlString);
-
-    // Build headers with authentication
     const headers: Record<string, string> = {};
     const userId = await getStoredUserId();
     if (userId) {
       headers["x-user-id"] = userId;
     }
 
+    logApi({ method: "GET", url: urlString });
+
     let res: Response;
     try {
-      res = await fetch(url, {
+      res = await fetch(urlString, {
         headers,
         credentials: "include",
       });
-    } catch (error) {
-      // Network error
-      const errorMsg = error instanceof Error ? error.message : "Unknown network error";
-      logApi("GET", urlString, undefined, `Network error: ${errorMsg}`);
-      throw new ApiError({
-        message: `Network error: ${errorMsg}. URL: ${urlString}`,
-        url: urlString,
-        isNetworkError: true,
-      });
+    } catch {
+      const message = `Network error: cannot reach API. URL=${urlString}. Check EXPO_PUBLIC_DOMAIN`;
+      logApi({ method: "GET", url: urlString, message, level: "error" });
+      throw new ApiError({ message, url: urlString, isNetworkError: true });
     }
 
-    // Handle 401 specially if configured
     if (unauthorizedBehavior === "returnNull" && res.status === 401) {
-      logApi("GET", urlString, 401, "Unauthorized (returning null)");
+      logApi({ method: "GET", url: urlString, status: res.status, message: "Unauthorized (returning null)" });
       return null;
     }
 
-    // Check content type for HTML (misconfiguration)
-    const contentType = res.headers.get("content-type") || "";
-    if (contentType.includes("text/html")) {
-      const snippet = (await res.text()).substring(0, 100);
-      logApi("GET", urlString, res.status, `Got HTML instead of JSON: ${snippet}...`);
-      throw new ApiError({
-        message: `API misconfigured: received HTML instead of JSON. URL: ${urlString}`,
-        status: res.status,
-        statusText: res.statusText,
-        url: urlString,
-        isHtmlResponse: true,
-      });
-    }
-
-    if (!res.ok) {
-      let errorMessage = res.statusText;
-      if (contentType.includes("application/json")) {
-        try {
-          const errorData = await res.json();
-          errorMessage = errorData.error || errorData.message || res.statusText;
-        } catch {
-          // Use status text
-        }
-      }
-      logApi("GET", urlString, res.status, errorMessage);
-      throw new ApiError({
-        message: `${res.status}: ${errorMessage}`,
-        status: res.status,
-        statusText: res.statusText,
-        url: urlString,
-      });
-    }
-
-    logApi("GET", urlString, res.status);
+    await validateResponse(res, { method: "GET", url: urlString });
     return await res.json();
   };
 

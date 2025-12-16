@@ -3,6 +3,7 @@ import type { Request, Response, NextFunction } from "express";
 import { registerRoutes } from "./routes";
 import * as fs from "fs";
 import * as path from "path";
+import { randomUUID } from "crypto";
 
 const app = express();
 const log = console.log;
@@ -13,40 +14,26 @@ declare module "http" {
   }
 }
 
+declare module "express-serve-static-core" {
+  interface Request {
+    requestId?: string;
+  }
+}
+
 function setupCors(app: express.Application) {
   app.use((req, res, next) => {
-    const origin = req.header("origin");
-
-    if (origin) {
-      const allowedPatterns = [
-        /^https?:\/\/localhost(:\d+)?$/,
-        /^https?:\/\/127\.0\.0\.1(:\d+)?$/,
-        /\.replit\.dev$/,
-        /\.replit\.app$/,
-        /\.riker\.replit\.dev$/,
-        /\.repl\.co$/,
-      ];
-
-      const isAllowed = allowedPatterns.some((pattern) => pattern.test(origin)) ||
-        (process.env.REPLIT_DEV_DOMAIN && origin.includes(process.env.REPLIT_DEV_DOMAIN));
-
-      if (isAllowed) {
-        res.header("Access-Control-Allow-Origin", origin);
-        res.header(
-          "Access-Control-Allow-Methods",
-          "GET, POST, PUT, DELETE, OPTIONS, PATCH",
-        );
-        res.header("Access-Control-Allow-Headers", "Content-Type, Authorization, x-user-id, x-replit-user-id, x-replit-user-name, x-replit-user-roles");
-        res.header("Access-Control-Allow-Credentials", "true");
-      }
-    } else {
-      res.header("Access-Control-Allow-Origin", "*");
-      res.header(
-        "Access-Control-Allow-Methods",
-        "GET, POST, PUT, DELETE, OPTIONS, PATCH",
-      );
-      res.header("Access-Control-Allow-Headers", "Content-Type, Authorization, x-replit-user-id, x-replit-user-name, x-replit-user-roles");
-    }
+    const origin = req.header("origin") || "*";
+    res.header("Access-Control-Allow-Origin", origin);
+    res.header(
+      "Access-Control-Allow-Methods",
+      "GET, POST, PUT, DELETE, OPTIONS, PATCH",
+    );
+    res.header(
+      "Access-Control-Allow-Headers",
+      "Content-Type, Authorization, x-user-id, x-replit-user-id, x-replit-user-name, x-replit-user-roles",
+    );
+    res.header("Access-Control-Allow-Credentials", "true");
+    res.header("Vary", "Origin");
 
     if (req.method === "OPTIONS") {
       return res.sendStatus(200);
@@ -70,13 +57,36 @@ function setupBodyParsing(app: express.Application) {
 
 function setupRequestLogging(app: express.Application) {
   app.use((req, res, next) => {
+    const requestId = req.header("x-request-id") || randomUUID();
+    req.requestId = requestId;
+    res.setHeader("x-request-id", requestId);
+
     const start = Date.now();
-    const path = req.path;
+    const path = req.originalUrl || req.path;
     let capturedJsonResponse: Record<string, unknown> | undefined = undefined;
 
     const originalResJson = res.json;
     res.json = function (bodyJson, ...args) {
       capturedJsonResponse = bodyJson;
+
+      if (
+        res.statusCode >= 400 &&
+        bodyJson &&
+        typeof bodyJson === "object" &&
+        !Array.isArray(bodyJson)
+      ) {
+        const body = bodyJson as Record<string, unknown>;
+        if (!body.requestId) {
+          body.requestId = requestId;
+        }
+        if (!body.error && typeof body.message === "string") {
+          body.error = body.message;
+        }
+        if (!("details" in body)) {
+          body.details = typeof body.error === "string" ? body.error : undefined;
+        }
+      }
+
       return originalResJson.apply(res, [bodyJson, ...args]);
     };
 
@@ -85,7 +95,7 @@ function setupRequestLogging(app: express.Application) {
 
       const duration = Date.now() - start;
 
-      let logLine = `${req.method} ${path} ${res.statusCode} in ${duration}ms`;
+      let logLine = `[${requestId}] ${req.method} ${path} ${res.statusCode} in ${duration}ms`;
       if (capturedJsonResponse) {
         logLine += ` :: ${JSON.stringify(capturedJsonResponse)}`;
       }
@@ -209,42 +219,46 @@ function configureExpoAndLanding(app: express.Application) {
 }
 
 function setupErrorHandler(app: express.Application) {
-  app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
+  app.use((err: unknown, req: Request, res: Response, _next: NextFunction) => {
     const error = err as {
       status?: number;
       statusCode?: number;
       message?: string;
+      stack?: string;
     };
 
     const status = error.status || error.statusCode || 500;
     const message = error.message || "Internal Server Error";
+    const requestId = req.requestId || randomUUID();
 
-    res.status(status).json({ message });
+    res.setHeader("x-request-id", requestId);
+    console.error(`[${requestId}]`, err);
 
-    throw err;
+    res.status(status).json({
+      error: message,
+      details: process.env.NODE_ENV === "development" ? error.stack : undefined,
+      requestId,
+    });
   });
 }
-app.get("/api/health", (_req, res) => res.json({ ok: true, ts: new Date().toISOString() }));
-
-import cors from "cors";
-
-const origins = (process.env.CORS_ORIGINS || "")
-  .split(",")
-  .map(s => s.trim())
-  .filter(Boolean);
-
-app.use(cors({
-  origin: origins.length ? origins : true,
-  credentials: false
-}));
 
 (async () => {
   // Log database configuration at startup (show host only, no credentials)
   try {
-    const dbUrl = new URL(process.env.DATABASE_URL || '');
+    const dbUrl = new URL(process.env.DATABASE_URL || "");
     log(`Using Supabase PostgreSQL via DATABASE_URL (host: ${dbUrl.hostname})`);
   } catch {
     log(`Using Supabase PostgreSQL via DATABASE_URL`);
+  }
+
+  const expectedDomain =
+    process.env.EXPO_PUBLIC_DOMAIN || process.env.REPLIT_DEV_DOMAIN;
+  if (expectedDomain) {
+    log(`Expecting EXPO_PUBLIC_DOMAIN for client: ${expectedDomain}`);
+  } else {
+    log(
+      "EXPO_PUBLIC_DOMAIN not set in server env. Mobile client must provide it.",
+    );
   }
   
   setupCors(app);
@@ -253,13 +267,16 @@ app.use(cors({
 
   configureExpoAndLanding(app);
 
-  const server = await registerRoutes(app);
+  await registerRoutes(app);
 
   setupErrorHandler(app);
 
-const PORT = Number(process.env.PORT || 5000);
-const HOST = "0.0.0.0";
+  const PORT = Number(process.env.PORT || 5000);
+  const HOST = "0.0.0.0";
   app.listen(PORT, HOST, () => {
-  console.log(`API listening on http://${HOST}:${PORT}`);
-})
-})
+    console.log(`API listening on http://${HOST}:${PORT}`);
+  });
+})().catch((error) => {
+  console.error("Server failed to start", error);
+  process.exit(1);
+});

@@ -1,17 +1,23 @@
 {
-  "name": "my-app",
-  "main": "client/index.js",
+  "name": "containerflow",
   "version": "1.0.0",
+  "private": true,
+  "main": "client/index.js",
   "type": "module",
+  "engines": {
+    "node": ">=18"
+  },
   "scripts": {
-"dev": "rimraf dist && run-p dev:esbuild dev:electron",
-    "build": "tsc && cross-env NODE_ENV=\"production\" ts-node ./esbuild.ts",
-    "dev:esbuild": "cross-env NODE_ENV=\"development\" ts-node ./esbuild.ts",
-    "dev:electron": "wait-on dist/main.js dist/index.html && electronmon ."
-  }
-}
-
-"dependencies": {
+    "server:dev": "PORT=${PORT:-5000} NODE_ENV=development tsx server/index.ts",
+    "server:build": "esbuild server/index.ts --platform=node --packages=external --bundle --format=esm --outdir=server_dist",
+    "server:start": "NODE_ENV=production node server_dist/index.js",
+    "expo:dev": "expo start --tunnel -c --port 5000",
+    "all:dev": "concurrently -k -n server,expo -c green,magenta \"npm run server:dev\" \"npm run expo:dev\"",
+    "lint": "expo lint",
+    "check:types": "tsc --noEmit",
+    "format": "prettier --write \"**/*.{js,ts,tsx,css,json}\""
+  },
+  "dependencies": {
     "@expo/vector-icons": "^15.0.2",
     "@react-native-async-storage/async-storage": "^2.2.0",
     "@react-navigation/bottom-tabs": "^7.4.0",
@@ -42,6 +48,7 @@
     "expo-web-browser": "~15.0.10",
     "express": "^4.21.2",
     "http-proxy-middleware": "^3.0.5",
+    "ngrok": "^5.0.0-beta.2",
     "pg": "^8.16.3",
     "react": "19.1.0",
     "react-dom": "19.1.0",
@@ -67,6 +74,7 @@
     "@types/node": "24.10.0",
     "@types/react": "~19.1.0",
     "babel-plugin-module-resolver": "^5.0.2",
+    "concurrently": "^9.1.2",
     "drizzle-kit": "^0.31.8",
     "esbuild": "^0.25.12",
     "eslint": "^9.25.0",
@@ -76,6 +84,5 @@
     "eslint-plugin-prettier": "^5.5.4",
     "prettier": "3.6.2",
     "typescript": "~5.9.2"
-  },
-  "private": true
+  }
 }
