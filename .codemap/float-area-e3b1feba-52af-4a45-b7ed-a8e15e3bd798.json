@@ -46,6 +46,12 @@
                 "width": 600,
                 "height": 450,
                 "spacing": 0
+<<<<<<< HEAD
+=======
+<<<<<<< Updated upstream
+=======
+<<<<<<< HEAD
+>>>>>>> origin/main
             },
             {
                 "widget": {
@@ -61,6 +67,12 @@
                 "width": 600,
                 "height": 450,
                 "spacing": 0
+<<<<<<< HEAD
+=======
+=======
+>>>>>>> origin/main
+>>>>>>> Stashed changes
+>>>>>>> origin/main
             }
         ]
     ],
@@ -72,4 +84,16 @@
         "annotations": [],
         "highlights": []
     }
+<<<<<<< HEAD
 }
+=======
+<<<<<<< Updated upstream
+}
+=======
+<<<<<<< HEAD
+}
+=======
+}
+>>>>>>> origin/main
+>>>>>>> Stashed changes
+>>>>>>> origin/main
