@@ -46,6 +46,27 @@
                 "width": 600,
                 "height": 450,
                 "spacing": 0
+<<<<<<< Updated upstream
+=======
+<<<<<<< HEAD
+            },
+            {
+                "widget": {
+                    "constructionOptions": {
+                        "factoryId": "code-editor-opener",
+                        "options": {
+                            "kind": "navigatable",
+                            "uri": "file:///%5Bobject%20Object%5D",
+                            "floatAreaId": "e3b1feba-52af-4a45-b7ed-a8e15e3bd798"
+                        }
+                    }
+                },
+                "width": 600,
+                "height": 450,
+                "spacing": 0
+=======
+>>>>>>> origin/main
+>>>>>>> Stashed changes
             }
         ]
     ],
@@ -57,4 +78,12 @@
         "annotations": [],
         "highlights": []
     }
+<<<<<<< Updated upstream
 }
+=======
+<<<<<<< HEAD
+}
+=======
+}
+>>>>>>> origin/main
+>>>>>>> Stashed changes
